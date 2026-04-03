@@ -53,7 +53,6 @@ Allowed commands:
 - `hold_current_phase`
 - `set_all_red`
 
-These are defined in [`TrafficControlAction`](/Users/saichaitu/Desktop/Traffic_Control/traffic_control_env/models.py).
 These are defined in `models.py`.
 
 ## Observation Space
@@ -200,8 +199,8 @@ back to the built-in deterministic heuristic baseline.
 ## Baseline Scores
 
 Current deterministic heuristic baseline after the latest hard-task tightening:
-- easy: `1.000`
-- medium: `0.979`
+- easy: `0.950`
+- medium: `0.936`
 - hard: `0.676`
 
 This is intentionally no longer a near-perfect hard-task result, which makes the
@@ -213,13 +212,73 @@ Build locally:
 
 ```bash
 cd traffic_control_env
-docker build -t traffic-control-env:latest -f server/Dockerfile .
+docker build -t traffic-control-env:latest .
 docker run -p 8000:8000 traffic-control-env:latest
 ```
 
 If `docker --version` works but `docker build` fails with `docker.sock: no such file or directory`,
 that means the Docker CLI is installed but the Docker daemon is not running yet.
 On macOS, start Docker Desktop or another Docker runtime before retrying.
+
+## Deployment
+
+For Hugging Face Spaces:
+- the repo front-matter is already configured for `sdk: docker`
+- the repo now includes a root `Dockerfile`, which Docker Spaces expects
+- secrets should be set in the Space settings, not in code
+
+Basic deployment flow:
+
+```bash
+cd traffic_control_env
+source .venv/bin/activate
+./.venv/bin/openenv --help
+export HF_TOKEN=your_real_hugging_face_token
+export API_BASE_URL=https://router.huggingface.co/v1
+export MODEL_NAME=openai/gpt-4.1-mini
+openenv push
+```
+
+After the Space is live, test:
+- `/health`
+- `/web`
+- `POST /reset`
+- reset
+- one or two manual steps
+
+See `DEPLOYMENT.md` for the short manual checklist.
+
+## Live Space URL
+
+Add your final deployed Space URL here before submission:
+
+`https://huggingface.co/spaces/<your-username>/<your-space-name>`
+
+Space app base URL:
+
+`https://<your-username>-<your-space-name>.hf.space`
+
+## Local Smoke-Test Checklist
+
+- `openenv validate` passes
+- `HF_TOKEN=dummy python inference.py` runs all tasks
+- `HF_TOKEN=dummy TASK_ID=hard python inference.py` runs the hard task only
+- `python -m server.app --host 0.0.0.0 --port 8000` starts the local server
+- `curl http://localhost:8000/health` returns `200`
+- `curl http://localhost:8000/tasks` returns the task list
+- `docker build -t traffic-control-env:latest .` succeeds
+- `docker run -p 8000:8000 traffic-control-env:latest` boots cleanly
+
+## Hosted Smoke-Test Checklist
+
+- Hugging Face Space status is `Running`
+- live `/health` returns `200`
+- live `/web` loads correctly
+- live `POST /reset` returns a valid response
+- live `reset()` works
+- one or two live `step()` calls work
+- no secrets are hard-coded in the repo
+- the submitted Space URL matches the deployed environment
 
 ## Why This Design
 

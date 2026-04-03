@@ -636,8 +636,8 @@ class TrafficControlEnvironment(Environment):
 
     def _compute_stability_score(self) -> float:
         allowed_switches = {
-            TaskId.EASY: 4,
-            TaskId.MEDIUM: 5,
+            TaskId.EASY: 3,
+            TaskId.MEDIUM: 4,
             TaskId.HARD: 6,
         }[self._task.task_id]
         overswitch_penalty = max(self._state.switch_count - allowed_switches, 0)

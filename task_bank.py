@@ -28,9 +28,10 @@ EASY_TASK = TaskScenario(
         VehicleSpawn(arrival_step=8, direction=Direction.NORTH, count=1),
     ],
     grader_weights={
-        "throughput": 0.5,
-        "average_wait": 0.35,
-        "stability": 0.15,
+        "throughput": 0.45,
+        "average_wait": 0.3,
+        "stability": 0.2,
+        "fairness": 0.05,
     },
 )
 
@@ -62,10 +63,11 @@ MEDIUM_TASK = TaskScenario(
         VehicleSpawn(arrival_step=8, direction=Direction.WEST, count=1),
     ],
     grader_weights={
-        "throughput": 0.35,
-        "average_wait": 0.25,
+        "throughput": 0.3,
+        "average_wait": 0.2,
         "emergency_handling": 0.3,
-        "stability": 0.1,
+        "stability": 0.15,
+        "fairness": 0.05,
     },
 )
 
