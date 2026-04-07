@@ -100,7 +100,7 @@ This gives dense reward signals instead of only a final pass/fail score.
 
 ## Deterministic Grading
 
-At episode end, the environment computes a score in `[0.0, 1.0]`.
+At episode end, the environment computes a final validation score strictly inside `(0.0, 1.0)`.
 
 The score uses weighted components such as:
 - throughput
