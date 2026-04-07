@@ -515,8 +515,11 @@ class TrafficControlEnvironment(Environment):
 
         final_score = self._clamp(weighted_total / weight_sum if weight_sum else 0.0)
         return {
-            **component_scores,
-            "final_score": final_score,
+            **{
+                metric_name: self._strict_score(score)
+                for metric_name, score in component_scores.items()
+            },
+            "final_score": self._strict_score(final_score),
         }
 
     def _count_emergency_passed(self) -> int:
@@ -577,6 +580,10 @@ class TrafficControlEnvironment(Environment):
 
     def _clamp(self, value: float, low: float = 0.0, high: float = 1.0) -> float:
         return max(low, min(value, high))
+
+    def _strict_score(self, value: float) -> float:
+        epsilon = 1e-6
+        return max(epsilon, min(1.0 - epsilon, value))
 
     def _queue_penalty_scale(self) -> float:
         if self._task.task_id == TaskId.HARD:
