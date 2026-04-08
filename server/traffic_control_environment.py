@@ -466,43 +466,38 @@ class TrafficControlEnvironment(Environment):
         return no_pending_spawns and all_queues_empty
 
     def _grade_episode(self) -> Dict[str, float]:
+        """Grade the episode on multiple dimensions.
+        
+        All scores are strictly bounded to (0, 1) exclusive.
+        """
         metrics = self._state.metrics
         weights = self._task.grader_weights
         total_scheduled = self._total_scheduled_vehicles()
         scheduled_by_direction = self._scheduled_vehicles_by_direction()
         emergency_total = self._total_scheduled_emergency_vehicles()
 
-        throughput_score = self._strict_score(self._clamp(
-            metrics.total_vehicles_passed / total_scheduled if total_scheduled else 1.0
-        ))
+        # Calculate all component scores, ensuring each is bounded
+        throughput_score = self._bound_score(
+            metrics.total_vehicles_passed / total_scheduled if total_scheduled else 0.5
+        )
 
         acceptable_average_wait = self._acceptable_average_wait()
-        average_wait_score = self._strict_score(self._clamp(
+        average_wait_score = self._bound_score(
             1.0 - (metrics.average_wait_time / acceptable_average_wait)
-        ))
+        )
 
-        stability_score = self._strict_score(self._compute_stability_score())
+        stability_score = self._bound_score(self._compute_stability_score())
 
-        if emergency_total > 0:
-            emergency_pass_rate = self._count_emergency_passed() / emergency_total
-            emergency_wait_quality = self._strict_score(self._clamp(
-                1.0
-                - (
-                    metrics.total_emergency_wait_time
-                    / max(self._emergency_wait_budget() * emergency_total, 1.0)
-                )
-            ))
-            emergency_clearance_bonus = 0.99 if not metrics.emergency_vehicle_active else 0.01
-            emergency_handling_score = self._strict_score(
-                emergency_pass_rate * 0.45
-                + emergency_wait_quality * 0.4
-                + emergency_clearance_bonus * 0.15
-            )
-        else:
-            emergency_handling_score = self._strict_score(0.5)
+        # Emergency handling requires special care
+        emergency_handling_score = self._compute_emergency_handling_score(
+            emergency_total, metrics
+        )
 
-        fairness_score = self._strict_score(self._compute_fairness_score(scheduled_by_direction))
+        fairness_score = self._bound_score(
+            self._compute_fairness_score(scheduled_by_direction)
+        )
 
+        # Assemble component scores (all already bounded to [0.01, 0.99])
         component_scores = {
             "throughput": throughput_score,
             "average_wait": average_wait_score,
@@ -511,14 +506,21 @@ class TrafficControlEnvironment(Environment):
             "fairness": fairness_score,
         }
 
+        # Compute weighted average of bounded components
         weighted_total = 0.0
         weight_sum = 0.0
         for metric_name, weight in weights.items():
-            weighted_total += component_scores.get(metric_name, 0.0) * weight
+            component_value = component_scores.get(metric_name, 0.5)
+            weighted_total += component_value * weight
             weight_sum += weight
 
-        final_score = self._strict_score(self._clamp(weighted_total / weight_sum if weight_sum else 0.5))
-        return {
+        # Final score is also bounded
+        final_score = self._bound_score(
+            weighted_total / weight_sum if weight_sum > 0 else 0.5
+        )
+
+        # Return all scores, verified to be in (0, 1)
+        result = {
             "throughput": throughput_score,
             "average_wait": average_wait_score,
             "stability": stability_score,
@@ -526,6 +528,16 @@ class TrafficControlEnvironment(Environment):
             "fairness": fairness_score,
             "final_score": final_score,
         }
+        
+        # Verify all scores are in valid range (0, 1) exclusive
+        for key, value in result.items():
+            if not (0.0 < value < 1.0):
+                raise ValueError(
+                    f"Score '{key}' = {value} is out of range (0, 1). "
+                    f"All scores must be strictly between 0 and 1."
+                )
+        
+        return result
 
     def _count_emergency_passed(self) -> int:
         total_emergency = self._total_scheduled_emergency_vehicles()
@@ -542,9 +554,48 @@ class TrafficControlEnvironment(Environment):
         )
         return max(total_emergency - still_waiting - remaining_in_spawns, 0)
 
+    def _compute_emergency_handling_score(
+        self, emergency_total: int, metrics: TrafficMetrics
+    ) -> float:
+        """Compute emergency handling score, strictly bounded to (0, 1)."""
+        if emergency_total <= 0:
+            # No emergencies, neutral score
+            return self._bound_score(0.5)
+
+        # Bounded pass rate: 0 to 1
+        emergency_passed = self._count_emergency_passed()
+        emergency_pass_rate = self._bound_score(emergency_passed / emergency_total)
+
+        # Bounded wait quality: based on budget compliance
+        emergency_wait_quality = self._bound_score(
+            1.0
+            - (
+                metrics.total_emergency_wait_time
+                / max(self._emergency_wait_budget() * emergency_total, 1.0)
+            )
+        )
+
+        # Clearance bonus: binary but expressed as bounded values
+        emergency_clearance_bonus = 0.99 if not metrics.emergency_vehicle_active else 0.01
+
+        # Weighted combination of bounded values
+        combined_score = (
+            emergency_pass_rate * 0.45
+            + emergency_wait_quality * 0.4
+            + emergency_clearance_bonus * 0.15
+        )
+
+        # Final bound to ensure it's strictly in (0, 1)
+        return self._bound_score(combined_score)
+
     def _compute_fairness_score(self, scheduled_by_direction: Dict[str, int]) -> float:
+        """Compute fairness score (before bounding).
+        
+        This returns a value that will be bounded by the caller.
+        """
         direction_ratios: List[float] = []
         wait_pressures: List[float] = []
+
         for direction, scheduled_count in scheduled_by_direction.items():
             if scheduled_count <= 0:
                 continue
@@ -559,13 +610,16 @@ class TrafficControlEnvironment(Environment):
                 wait_pressures.append(0.0)
 
         if not direction_ratios:
-            return self._strict_score(0.5)
+            # No directions scheduled - neutral fairness
+            return 0.5
 
         service_balance = max(direction_ratios) - min(direction_ratios)
         wait_balance = max(wait_pressures) - min(wait_pressures) if wait_pressures else 0.0
         normalized_wait_gap = wait_balance / max(self._task.horizon_steps / 2.0, 1.0)
 
-        return self._clamp(1.0 - (service_balance * 0.65) - (normalized_wait_gap * 0.35))
+        # This value will be bounded by caller
+        raw_fairness = 1.0 - (service_balance * 0.65) - (normalized_wait_gap * 0.35)
+        return raw_fairness
 
     def _total_scheduled_vehicles(self) -> int:
         return sum(spawn.count for spawn in self._task.spawn_schedule)
@@ -590,6 +644,14 @@ class TrafficControlEnvironment(Environment):
         return strict_unit_interval(value)
 
     def _reported_reward(self, value: float) -> float:
+        return strict_unit_interval(value)
+
+    def _bound_score(self, value: float) -> float:
+        """Bound a score to strictly between 0 and 1 (exclusive).
+        
+        This is the primary scoring boundary function for all grading paths.
+        Ensures all grader outputs fall strictly within (0, 1).
+        """
         return strict_unit_interval(value)
 
     def _queue_penalty_scale(self) -> float:
@@ -649,18 +711,27 @@ class TrafficControlEnvironment(Environment):
         return max(self._task.horizon_steps / 3.0, 1.0)
 
     def _compute_stability_score(self) -> float:
+        """Compute stability score (before bounding).
+        
+        This returns a value that will be bounded by the caller.
+        """
         allowed_switches = {
             TaskId.EASY: 3,
             TaskId.MEDIUM: 4,
             TaskId.HARD: 6,
         }[self._task.task_id]
+        
         overswitch_penalty = max(self._state.switch_count - allowed_switches, 0)
         all_red_penalty = 1 if self._state.current_phase == SignalPhase.ALL_RED else 0
-        return self._clamp(
+        
+        raw_stability = (
             1.0
             - (overswitch_penalty / max(self._task.horizon_steps / 3.0, 1.0))
             - (all_red_penalty * 0.1)
         )
+        
+        # Return raw value to be bounded by caller
+        return raw_stability
 
     def _emergency_wait_budget(self) -> float:
         if self._task.task_id == TaskId.HARD:
