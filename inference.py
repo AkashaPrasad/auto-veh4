@@ -41,6 +41,7 @@ class EpisodeResult:
     task_id: str
     success: bool
     steps: int
+    score: float
     rewards: list[float]
 
 
@@ -197,17 +198,20 @@ def run_episode(task_id: TaskId) -> EpisodeResult:
                 f"error={error_text}"
             )
 
-        success = bool(env.state.final_score is not None and env.state.final_score > 0.0)
+        score = reported_reward(env.state.final_score or 0.0)
+        success = bool(score > 0.0)
         return EpisodeResult(
             task_id=task_id.value,
             success=success,
             steps=step_count,
+            score=score,
             rewards=rewards,
         )
     finally:
+        final_score = reported_reward(env.state.final_score or 0.0)
         print(
             f"[END] success={format_bool(success)} steps={step_count} "
-            f"rewards={format_rewards(rewards)}"
+            f"score={format_reward(final_score)} rewards={format_rewards(rewards)}"
         )
 
 
