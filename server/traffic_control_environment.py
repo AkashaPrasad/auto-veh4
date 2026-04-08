@@ -472,35 +472,36 @@ class TrafficControlEnvironment(Environment):
         scheduled_by_direction = self._scheduled_vehicles_by_direction()
         emergency_total = self._total_scheduled_emergency_vehicles()
 
-        throughput_score = self._clamp(
+        throughput_score = self._strict_score(self._clamp(
             metrics.total_vehicles_passed / total_scheduled if total_scheduled else 1.0
-        )
+        ))
 
         acceptable_average_wait = self._acceptable_average_wait()
-        average_wait_score = self._clamp(
+        average_wait_score = self._strict_score(self._clamp(
             1.0 - (metrics.average_wait_time / acceptable_average_wait)
-        )
+        ))
 
-        stability_score = self._compute_stability_score()
+        stability_score = self._strict_score(self._compute_stability_score())
 
-        emergency_handling_score = 1.0
         if emergency_total > 0:
             emergency_pass_rate = self._count_emergency_passed() / emergency_total
-            emergency_wait_quality = self._clamp(
+            emergency_wait_quality = self._strict_score(self._clamp(
                 1.0
                 - (
                     metrics.total_emergency_wait_time
                     / max(self._emergency_wait_budget() * emergency_total, 1.0)
                 )
-            )
-            emergency_clearance_bonus = 1.0 if not metrics.emergency_vehicle_active else 0.0
-            emergency_handling_score = (
+            ))
+            emergency_clearance_bonus = 0.99 if not metrics.emergency_vehicle_active else 0.01
+            emergency_handling_score = self._strict_score(
                 emergency_pass_rate * 0.45
                 + emergency_wait_quality * 0.4
                 + emergency_clearance_bonus * 0.15
             )
+        else:
+            emergency_handling_score = self._strict_score(0.5)
 
-        fairness_score = self._compute_fairness_score(scheduled_by_direction)
+        fairness_score = self._strict_score(self._compute_fairness_score(scheduled_by_direction))
 
         component_scores = {
             "throughput": throughput_score,
@@ -516,13 +517,14 @@ class TrafficControlEnvironment(Environment):
             weighted_total += component_scores.get(metric_name, 0.0) * weight
             weight_sum += weight
 
-        final_score = self._clamp(weighted_total / weight_sum if weight_sum else 0.0)
+        final_score = self._strict_score(self._clamp(weighted_total / weight_sum if weight_sum else 0.5))
         return {
-            **{
-                metric_name: self._strict_score(score)
-                for metric_name, score in component_scores.items()
-            },
-            "final_score": self._strict_score(final_score),
+            "throughput": throughput_score,
+            "average_wait": average_wait_score,
+            "stability": stability_score,
+            "emergency_handling": emergency_handling_score,
+            "fairness": fairness_score,
+            "final_score": final_score,
         }
 
     def _count_emergency_passed(self) -> int:
@@ -557,7 +559,7 @@ class TrafficControlEnvironment(Environment):
                 wait_pressures.append(0.0)
 
         if not direction_ratios:
-            return 1.0
+            return self._strict_score(0.5)
 
         service_balance = max(direction_ratios) - min(direction_ratios)
         wait_balance = max(wait_pressures) - min(wait_pressures) if wait_pressures else 0.0
